@@ -1,0 +1,10 @@
+{
+    "chatlogDir": "chatlogs/",
+    "db": {
+        "host": "localhost",
+        "user": "enyekala",
+        "password": "testpw",
+        "port": 3306,
+        "database": "enyekala"
+    }
+}
