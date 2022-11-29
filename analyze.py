@@ -40,6 +40,8 @@ def setupDatabase(connection):
     id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
     name TINYTEXT NOT NULL UNIQUE,
     firstLogin DATETIME,
+    lastSeen DATETIME,
+    totalTime BIGINT UNSIGNED,
     nLogins INT,
     nMessages INT,
     chunks INT
@@ -55,6 +57,12 @@ def setupDatabase(connection):
   connection.commit()
 
 
+def updateLastSeen(p: dict, time):
+  try:
+    if p["lastSeen"] < time:
+      p["lastSeen"] = time
+  except KeyError:
+      p["lastSeen"] = time
 
 
 def datetimeFromRegex(groups):
@@ -129,7 +137,9 @@ def analyzeLogins(files, d: dict):
   print("Stalking logins...", end="", flush=True)
 
   joinString = dateRegexNew + "\*{3} <(.*?)> joined the game.$"
-  quitString = dateRegexNew + "\*{3} <(.*?)> left the game.$"
+  # The quit string regex does not have a $ at the end, because an
+  # additional comment in parenthesis may follow.
+  quitString = dateRegexNew + "\*{3} <(.*?)> left the game."
   for fileName in files:
     with open(fileName) as f:
       for l in f:
@@ -151,6 +161,7 @@ def analyzeLogins(files, d: dict):
             d[name]["firstLogin"] = startDate
           d[name]["start"] = startDate
           d[name]["nLogin"] += 1
+          updateLastSeen(d[name], startDate)
           continue
 
         res = re.search(quitString, l)
@@ -167,6 +178,7 @@ def analyzeLogins(files, d: dict):
           if not d[name].get("totalTime"):
             d[name]["totalTime"] = datetime.timedelta()
           d[name]["totalTime"] += dt
+          updateLastSeen(d[name], endDate)
           if dt > datetime.timedelta(days=1):
             pass#print(dt, name)
 
@@ -212,6 +224,10 @@ def analyzeChatMessages(files, d: dict):
           d[name]["nMsg"] = 0
         d[name]["nMsg"] += 1
 
+        r = [int(i) for i in res.groups()[:6]]
+        date = datetime.datetime(r[0], r[1], r[2], r[3], r[4], r[5]) # ToDo: Add timezone info
+        updateLastSeen(d[name], date)
+
   endTime = time.perf_counter()
   print(f" {endTime-startTime:.2f} s", flush=True)
   return d
@@ -250,14 +266,14 @@ def printPlayer(d, name):
     return
 
   print(f"User: {name}")
+  print(f"Last seen: {d[name]['lastSeen']}")
   print(f"First login: {d[name]['firstLogin']}")
   print(f"Time played: {d[name]['totalTime']}")
   print(f"Chunks generated: {d[name]['chunks']}")
   print(f"Chat messages sent: {d[name]['nMsg']}")
   if "planes" in d[name]:
-    print("Visited ", end="")
-    for p in d[name]['planes']:
-      print(f"{p}, ", end="")
+    realms = ', '.join(d[name]['planes'])
+    print(f"Visited {realms}")
 
 
 
@@ -276,7 +292,7 @@ if __name__ == "__main__":
 
 
   cursor = connection.cursor()
-  query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?);"
+  query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?);"
   for name in d:
     try:
         if d[name].get("nLogin"):
@@ -289,6 +305,16 @@ if __name__ == "__main__":
         else:
           firstLogin = None
 
+        if d[name].get("lastSeen"):
+          lastSeen = d[name]["lastSeen"]
+        else:
+          lastSeen = None
+
+        if d[name].get("totalTime"):
+          totalTime = d[name]["totalTime"].total_seconds()
+        else:
+          totalTime = None
+
         if d[name].get("nMsg"):
           nMsg = d[name]["nMsg"]
         else:
@@ -299,7 +325,7 @@ if __name__ == "__main__":
         else:
           chunks = 0
 
-        cursor.execute(query, (name, firstLogin, nLogin, nMsg, chunks))
+        cursor.execute(query, (name, firstLogin, lastSeen, totalTime, nLogin, nMsg, chunks))
     except mariadb.IntegrityError as e:
         pass
 
