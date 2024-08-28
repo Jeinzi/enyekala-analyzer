@@ -7,7 +7,7 @@ import datetime
 import configmanager
 
 
-dateRegexNew = "^\[(\d{4})/(\d{2})/(\d{2}), (\d{2}):(\d{2}):(\d{2}) UTC\][ ]*"
+dateRegexNew = r"^\[(\d{4})/(\d{2})/(\d{2}), (\d{2}):(\d{2}):(\d{2}) UTC\][ ]*"
 serverMsgPrefix = "# Server: "
 
 
@@ -81,8 +81,8 @@ def analyzeMapgen(files, d: dict):
   print("Blaming chunks...", end="", flush=True)
 
   chunkGenerations = {}
-  regexAnon = dateRegexNew + "# Server: Mapgen working, expect lag. (Chunks: (\d*).)$"
-  regexBlame = dateRegexNew + "# Server: Mapgen scrambling. Blame <(.*?)> for lag. Chunks: (\d*).$"
+  regexAnon = dateRegexNew + r"# Server: Mapgen working, expect lag. (Chunks: (\d*).)$"
+  regexBlame = dateRegexNew + r"# Server: Mapgen scrambling. Blame <(.*?)> for lag. Chunks: (\d*).$"
   for fileName in files:
     dateString = fileName.split("/")[-1]
     year = int(dateString[0:4])
@@ -110,7 +110,13 @@ def analyzeMapgen(files, d: dict):
             d[name]["chunks"] = 0
           d[name]["chunks"] += chunks
 
+          print(f"----{date}")
           date = dateFromRegex(g)
+          print(date)
+          if not chunkGenerations.get(date):
+            # This is needed for the chatlog of 2024-07-18, because at there is a chunk generation of
+            # 2024-07-19 at the end.
+            chunkGenerations[date] = 0
           chunkGenerations[date] += chunks
           continue
 
@@ -136,10 +142,10 @@ def analyzeLogins(files, d: dict):
   startTime = time.perf_counter()
   print("Stalking logins...", end="", flush=True)
 
-  joinString = dateRegexNew + "\*{3} <(.*?)> joined the game.$"
+  joinString = dateRegexNew + r"\*{3} <(.*?)> joined the game.$"
   # The quit string regex does not have a $ at the end, because an
   # additional comment in parenthesis may follow.
-  quitString = dateRegexNew + "\*{3} <(.*?)> left the game."
+  quitString = dateRegexNew + r"\*{3} <(.*?)> left the game."
   for fileName in files:
     with open(fileName) as f:
       for l in f:
@@ -198,15 +204,15 @@ def analyzeChatMessages(files, d: dict):
   # <!boxface [Caverns: 1059,-5791,-8929]!> HELP
   # Example without realm:
   # <J2 [-232,-4,1]> hello?
-  regex = (dateRegexNew +     # First, the timestamp
-          "<!?(.*?)"          # Then, capture the user name; optional ! in case of shouting: "<!boxface"
-          "( \["              # Open a new group in case the player is marked, with coordinates show in brackets: " ["
-          "(.*?: ?)?"         # If this is the case, the realm comes next: "Caverns: "
-                              # But realms were missing at the beginning of the servers life, so this is also an optional group!
-                              # Also, there are three cases were the space after the colon is missing -_- (as of 2022-11-19)
-          "-?\d*,-?\d*,-?\d*" # The coordinates follow, minus sign is optional: "1059,-5791,-8929"
-          "\])?"              # Close the group for the player marking and make it optional: "]"
-          "!?>"               # And the closing chevron with optional shouting finally ending this: "!>"
+  regex = (dateRegexNew +      # First, the timestamp
+          "<!?(.*?)"           # Then, capture the user name; optional ! in case of shouting: "<!boxface"
+          r"( \["              # Open a new group in case the player is marked, with coordinates show in brackets: " ["
+          "(.*?: ?)?"          # If this is the case, the realm comes next: "Caverns: "
+                               # But realms were missing at the beginning of the servers life, so this is also an optional group!
+                               # Also, there are three cases were the space after the colon is missing -_- (as of 2022-11-19)
+          r"-?\d*,-?\d*,-?\d*" # The coordinates follow, minus sign is optional: "1059,-5791,-8929"
+          r"\])?"              # Close the group for the player marking and make it optional: "]"
+          "!?>"                # And the closing chevron with optional shouting finally ending this: "!>"
           )
 
   for fileName in files:
