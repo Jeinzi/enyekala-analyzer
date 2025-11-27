@@ -26,14 +26,21 @@ def setup(connection):
   playersTableCreation = """CREATE OR REPLACE TABLE players (
     id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
     name TINYTEXT NOT NULL UNIQUE,
-    firstLogin DATETIME,
+    firstSeen DATETIME,
     lastSeen DATETIME,
     totalTime BIGINT UNSIGNED,
     nLogins INT UNSIGNED,
     nMessages INT UNSIGNED,
     nSuicides INT UNSIGNED,
-    chunks INT UNSIGNED
-  );"""
+    chunks INT UNSIGNED,
+    nDuctTapes INT UNSIGNED,
+    nKicks INT UNSIGNED,
+    nMarks INT UNSIGNED,
+    nShouts INT UNSIGNED,
+    nMes INT UNSIGNED,
+    planes MEDIUMTEXT
+  )
+  CHARACTER SET 'utf8mb4' COLLATE 'utf8mb4_de_pb_0900_as_cs';"""
 
   mobsTableCreation = """CREATE OR REPLACE TABLE mobs (
     id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
@@ -52,12 +59,18 @@ def setup(connection):
     analyzeDate DATETIME
   );"""
 
+  chunkTableCreation = """CREATE OR REPLACE TABLE chunkGenerations (
+    id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+    timestamp DATE NOT NULL,
+    count INT UNSIGNED
+  );"""
+
 
   cursor.execute(playersTableCreation)
   cursor.execute(metaTableCreation)
   cursor.execute(mobsTableCreation)
+  cursor.execute(chunkTableCreation)
   cursor.execute(accountCleanupTableCreation)
-  setupOutback(connection)
 
 
 

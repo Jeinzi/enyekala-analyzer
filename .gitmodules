@@ -1,0 +1,6 @@
+[submodule "musttest_game"]
+	path = musttest_game
+	url = https://github.com/BluebirdGreycoat/musttest_game
+[submodule "mtschem"]
+	path = mtschem
+	url = https://github.com/Jeinzi/python-mtschem.git

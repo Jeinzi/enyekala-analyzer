@@ -6,43 +6,29 @@ import mariadb
 import datetime
 import database
 import configmanager
+from helpers import *
 
 from mobmessages import kill_ang
 
-
+# Date format switch happened on 2017-07-05
 dateRegexNew = r"^\[(\d{4})/(\d{2})/(\d{2}), (\d{2}):(\d{2}):(\d{2}) UTC\][ ]*"
 serverMsgPrefix = "# Server: "
-
-
-
-def updateLastSeen(p: dict, time):
-  try:
-    if p["lastSeen"] < time:
-      p["lastSeen"] = time
-  except KeyError:
-      p["lastSeen"] = time
-
-
-def datetimeFromRegex(groups):
-  r = [int(i) for i in groups[:6]]
-  return datetime.datetime(*r)
-
-
-def dateFromRegex(groups):
-  r = [int(i) for i in groups[:3]]
-  return datetime.date(*r)
+regexNameWithMark = (
+  "<(!)?(.*?)"         # Then, capture the user name; optional ! in case of shouting: "<!boxface"
+  r"( \["              # Open a new group in case the player is marked, with coordinates show in brackets: " ["
+  "(.*?: ?)?"          # If this is the case, the realm comes next: "Caverns: "
+                       # But realms were missing at the beginning of the servers life, so this is also an optional group!
+                       # Also, there are three cases were the space after the colon is missing -_- (as of 2022-11-19)
+  r"-?\d*,-?\d*,-?\d*" # The coordinates follow, minus sign is optional: "1059,-5791,-8929"
+  r"\])?"              # Close the group for the player marking and make it optional: "]"
+  "!?>"                # And the closing chevron with optional shouting finally ending this: "!>")
+)
 
 
 
 def analyzeMapgen(l: str, data: dict):
-  if not data.get("chunkGenerations"):
-    data["chunkGenerations"] = {}
-  d = data["players"]
+  players = data["players"]
   chunkGenerations = data["chunkGenerations"]
-  matched = False
-
-  regexAnon = dateRegexNew + r"# Server: Mapgen working, expect lag. (Chunks: (\d*).)$"
-  regexBlame = dateRegexNew + r"# Server: Mapgen scrambling. Blame <(.*?)> for lag. Chunks: (\d*).$"
 
   try:
     if l[30] != "#":
@@ -50,20 +36,19 @@ def analyzeMapgen(l: str, data: dict):
       return False
   except IndexError:
       pass
+
+  regexBlame = dateRegexNew + r"# Server: Mapgen scrambling\. Blame <(.*?)> for lag. Chunks: (\d*)\.$"
   res = re.search(regexBlame, l)
   if res:
     g = res.groups()
+    timestamp = datetimeFromRegex(g)
     name = g[6]
     chunks = int(g[7])
-    if not d.get(name):
-      d[name] = {}
-    if not d[name].get("chunks"):
-      d[name]["chunks"] = 0
-    d[name]["chunks"] += chunks
+    ensurePlayer(players, name, timestamp)
+    players[name]["nChunks"] += chunks
 
-    #print(f"----{date}")
-    date = dateFromRegex(g)
-    #print(date)
+    date = timestamp.date()
+    updateLastSeen(players[name], timestamp)
     if not chunkGenerations.get(date):
       # This is needed for the chatlog of 2024-07-18, because at there is a chunk generation of
       # 2024-07-19 at the end.
@@ -71,16 +56,17 @@ def analyzeMapgen(l: str, data: dict):
     chunkGenerations[date] += chunks
     return True
 
+  regexAnon = dateRegexNew + r"# Server: Mapgen working, expect lag\. \(Chunks: (\d*)\.\)$"
   res = re.search(regexAnon, l)
   if res:
-    g = res.groups()
-    chunks = int(g[6])
-    d[name]["chunks"] += int(chunks)
+    chunks = int(res.groups()[6])
     date = dateFromRegex(res.groups())
+    if not chunkGenerations.get(date):
+      chunkGenerations[date] = 0
     chunkGenerations[date] += chunks
     return True
 
-  return matched
+  return False
 
 
 def analyzeLogins(l: str, data: dict):
@@ -89,65 +75,46 @@ def analyzeLogins(l: str, data: dict):
   # - Player has not logged out yet (staying logged in past midnight UTC, especially on first login)
   # - Name changes while logged in
 
-  d = data["players"]
+  players = data["players"]
 
   joinString = dateRegexNew + r"\*{3} <(.*?)> joined the game.$"
   # The quit string regex does not have a $ at the end, because an
   # additional comment in parenthesis may follow.
   quitString = dateRegexNew + r"\*{3} <(.*?)> left the game."
-  matched = False
 
   try:
     if l[30] != "*":
       return False
   except IndexError:
-      pass
+      return False
   res = re.search(joinString, l)
   if res:
     dateGroups = res.groups()[:-1]
     name = res.groups()[-1]
-    r = [int(i) for i in dateGroups]
-    startDate = datetime.datetime(r[0], r[1], r[2], r[3], r[4], r[5]) # ToDo: Add timezone info
-    if not d.get(name):
-      d[name] = {}
-    if not d[name].get("sessions"):
-      d[name]["sessions"] = []
-    if not d[name].get("nLogin"):
-      d[name]["nLogin"] = 0
-      d[name]["firstLogin"] = startDate
-    d[name]["start"] = startDate
-    d[name]["sessions"].append({"start": startDate, "end": None})
-    d[name]["nLogin"] += 1
-    updateLastSeen(d[name], startDate)
+    startDate = datetimeFromRegex(res.groups())
+    ensurePlayer(players, name, startDate)
+    players[name]["start"] = startDate
+    players[name]["sessions"].append({"start": startDate, "end": None})
+    players[name]["nLogins"] += 1
+    updateLastSeen(players[name], startDate)
     return True
 
   res = re.search(quitString, l)
   if res:
     dateGroups = res.groups()[:-1]
     name = res.groups()[-1]
-    r = [int(i) for i in dateGroups]
-    endDate = datetime.datetime(r[0], r[1], r[2], r[3], r[4], r[5]) # ToDo: Add timezone info
-    try:
-      dt = endDate - d[name]["start"]
-    except KeyError as e:
-      #print("Warning: KeyError on {}".format(l))
-      #print(e)
-      print(f"KeyError: {l.rstrip("\n")}")
+    endDate = datetimeFromRegex(res.groups())
+    if not players.get(name) or len(players[name]["sessions"]) == 0:
+      # ToDo
       return True
-    if d[name]["sessions"][-1]["end"] == None:
-      d[name]["sessions"][-1]["end"] = endDate
+    if players[name]["sessions"][-1]["end"] == None:
+      players[name]["sessions"][-1]["end"] = endDate
     else:
-      print(f"Session of {name} never started")
-    if not d[name].get("totalTime"):
-      d[name]["totalTime"] = datetime.timedelta()
-    d[name]["totalTime"] += dt
-    updateLastSeen(d[name], endDate)
-    if dt > datetime.timedelta(days=1):
-      print(f"Session of {name} longer than one day ({dt})")
+      print(f"Session of {name} on {endDate} never started")
+    updateLastSeen(players[name], endDate)
     return True
 
-  return matched
-
+  return False
 
 
 def analyzeChatMessages(l: str, data: dict):
@@ -157,67 +124,50 @@ def analyzeChatMessages(l: str, data: dict):
   # <!boxface [Caverns: 1059,-5791,-8929]!> HELP
   # Example without realm:
   # <J2 [-232,-4,1]> hello?
-  regex = (dateRegexNew +      # First, the timestamp
-          "<!?(.*?)"           # Then, capture the user name; optional ! in case of shouting: "<!boxface"
-          r"( \["              # Open a new group in case the player is marked, with coordinates show in brackets: " ["
-          "(.*?: ?)?"          # If this is the case, the realm comes next: "Caverns: "
-                               # But realms were missing at the beginning of the servers life, so this is also an optional group!
-                               # Also, there are three cases were the space after the colon is missing -_- (as of 2022-11-19)
-          r"-?\d*,-?\d*,-?\d*" # The coordinates follow, minus sign is optional: "1059,-5791,-8929"
-          r"\])?"              # Close the group for the player marking and make it optional: "]"
-          "!?>"                # And the closing chevron with optional shouting finally ending this: "!>"
-          )
-  d = data["players"]
+  regex = dateRegexNew + regexNameWithMark
+  players = data["players"]
 
   res = re.search(regex, l)
   if not res:
     return False
-  name = res.groups()[6]
-  if "[" in name:
-    print(l)
-  if not d.get(name):
-    d[name] = {}
-  if not d[name].get("nMsg"):
-    d[name]["nMsg"] = 0
-  d[name]["nMsg"] += 1
-
-  r = [int(i) for i in res.groups()[:6]]
-  date = datetime.datetime(r[0], r[1], r[2], r[3], r[4], r[5]) # ToDo: Add timezone info
-  updateLastSeen(d[name], date)
+  name = res.groups()[7]
+  timestamp = datetimeFromRegex(res.groups())
+  ensurePlayer(players, name, timestamp)
+  updateLastSeen(players[name], timestamp)
+  players[name]["nMsg"] += 1
+  if res.groups()[6] == "!":
+    players[name]["nShouts"] += 1
   return True
-
 
 
 def analyzePlanes(l: str, data: dict):
-  d = data["players"]
-  regex = dateRegexNew + serverMsgPrefix + "<(.*?)> has plane shifted to (.*?).$"
+  # Server: <Nakilashiva> has plane shifted to Overworld.
+  # Server: <dunks> has plane shifted to Outback. Noob!
+  players = data["players"]
+  regex = dateRegexNew + serverMsgPrefix + r"<(.*?)> has plane shifted to (.*?)\.$"
 
   res = re.search(regex, l)
   if not res:
     return False
+  timestamp = datetimeFromRegex(res.groups())
   name = res.groups()[6]
   plane = res.groups()[7]
-  if not d.get(name):
-    d[name] = {}
-  if not d[name].get("planes"):
-    d[name]["planes"] = []
-  if not plane in d[name]["planes"]:
-    d[name]["planes"].append(plane)
-
+  ensurePlayer(players, name, timestamp)
+  if not plane in players[name]["planes"]:
+    players[name]["planes"].append(plane)
   return True
 
 
-def analyzeSuicide(l: str, data: dict):
-  d = data["players"]
+def analyzeSuicides(l: str, data: dict):
+  players = data["players"]
   regex = dateRegexNew + serverMsgPrefix + "<(.*?)> ended (her|him)self.$"
   res = re.search(regex, l)
   if not res:
     return False
+  timestamp = datetimeFromRegex(res.groups())
   name = res.groups()[6]
-  if not d[name].get("suicides"):
-    d[name]["suicides"] = 1
-  else:
-    d[name]["suicides"] += 1
+  ensurePlayer(players, name, timestamp)
+  players[name]["nSuicides"] += 1
   return True
 
 
@@ -229,8 +179,6 @@ def analyzeDeathByMob(l: str, data: dict):
   if not res:
     return False
   mob = res.groups()[8]
-  if not data.get("deathbymob"):
-    data["deathbymob"] = {}
   if not data["deathbymob"].get(mob):
     data["deathbymob"][mob] = 1
   else:
@@ -240,12 +188,10 @@ def analyzeDeathByMob(l: str, data: dict):
 
 def analyzeCleanups(l: str, data: dict):
   # [2025/11/16, 07:00:04 UTC]    # Server: Accounts have been hoovered. 1660 chars kept. Go save a stork.
-  regex = dateRegexNew + serverMsgPrefix + r"Accounts have been hoovered. (\d*) chars kept."
+  regex = dateRegexNew + serverMsgPrefix + r"Accounts have been hoovered\. (\d*) chars kept\."
   res = re.search(regex, l)
   if not res:
     return False
-  if not data.get("cleanups"):
-    data["cleanups"] = []
   data["cleanups"].append({
     "timestamp": datetimeFromRegex(res.groups()),
     "n": res.groups()[6]
@@ -256,6 +202,7 @@ def analyzeCleanups(l: str, data: dict):
 def analyzeRenames(l: str, data: dict):
   # [2022/08/29, 14:55:44 UTC]    # Server: Player <DragonsVolcanoDance> is reidentified as <GordanRamsey>!
   # [2019/03/31, 19:58:46 UTC]    # Server: Player <wannabe> renamed to <MustTest>!
+  players = data["players"]
   regex = dateRegexNew + serverMsgPrefix + r"Player <([^<>]*)> (renamed to|is reidentified as) <([^<>]*)>"
   res = re.search(regex, l)
   if not res:
@@ -273,35 +220,111 @@ def analyzeRenames(l: str, data: dict):
     #print(e)
     print(f"NEW KeyError: {l.rstrip("\n")}")
     return True
-  if d[from_name]["sessions"][-1]["end"] == None:
-    d[from_name]["sessions"][-1]["end"] = endDate
+  if players[from_name]["sessions"][-1]["end"] == None:
+    players[from_name]["sessions"][-1]["end"] = endDate
   else:
     print(f"Session of {from_name} never started")
-  if not d[from_name].get("totalTime"):
-    d[from_name]["totalTime"] = datetime.timedelta()
-  d[from_name]["totalTime"] += dt
+  if not players[from_name].get("totalTime"):
+    players[from_name]["totalTime"] = datetime.timedelta()
+  players[from_name]["totalTime"] += dt
 
   # Begin session for new player name.
-  # TODO d[to_name] = 
+  ensurePlayer(players, to_name, timestamp)
+  players[name]["start"] = startDate
+  players[name]["sessions"].append({"start": startDate, "end": None})
+  players[name]["nLogins"] += 1
+  updateLastSeen(players[name], startDate)
 
 
+def analyzeKicks(l: str, data: dict):
+  # [2023/03/17, 00:39:01 UTC]    # Server: <Cucina> was kicked for being AFK too long.
+  # [2023/03/17, 00:49:42 UTC]    # Server: <Jr> was kicked off the server.
+  regex = dateRegexNew + serverMsgPrefix + r"<(.*?)> was kicked"
+  if not (res := re.search(regex, l)):
+    return False
+  name = res.groups()[6]
+  if not data["players"].get(name):
+    print(f"WEIRD: {name} was kicked without ever logging in")
+    return True
+  data["players"][name]["nKicks"] += 1
+  return True
+
+
+def analyzeDuctTapes(l: str, data: dict):
+  # [2025/11/22, 18:11:31 UTC]    # Server: Player <Q>'s chat has been duct-taped!
+  regex = dateRegexNew + serverMsgPrefix + r"Player <(.*?)>'s chat has been duct-taped"
+  if not (res := re.search(regex, l)):
+    return False
+  name = res.groups()[6]
+  data["players"][name]["nDuctTapes"] += 1
+  return True
+
+
+def analyzeMes(l: str, data: dict):
+  # * <DragonsVolcanoDance> gives hamburger
+  # * <Alex [-386,-6,412]> coughs
+  regex = dateRegexNew + r"\* " + regexNameWithMark
+  if not (res := re.search(regex, l)):
+    return False
+  name = res.groups()[7]
+  timestamp = datetimeFromRegex(res.groups())
+  ensurePlayer(data["players"], name, timestamp)
+  data["players"][name]["nMes"] += 1
+  data["players"][name]["nMsg"] += 1
+  return True
+
+
+def analyzeMarks(l: str, data: dict):
+  # Server: Player <linux> has been marked!
+  regex = dateRegexNew + serverMsgPrefix + r"Player <(.*?)> has been marked!"
+  if not (res := re.search(regex, l)):
+    return False
+  name = res.groups()[6]
+  data["players"][name]["nMarks"] += 1
+  return True
+
+
+def parseShutdowns(l: str, data: dict):
+  # Server: Normal shutdown. Everybody off!
+  # TODO: Terminate all player sessions.
+  return False
+
+
+def printLine(l: str, data: dict):
+  print(l.rstrip("\n"))
+  return False
+
+
+def sumTotalTime(player: dict):
+  pass
+  #try:
+  #    dt = endDate - players[name]["start"]
+  #except KeyError as e:
+  #  #print("Warning: KeyError on {}".format(l))
+  #  #print(e)
+  #  print(f"KeyError: {l.rstrip("\n")}")
+  #  return True
+  #players[name]["totalTime"] += dt
+  #if dt > datetime.timedelta(days=1):
+  #  print(f"Session of {name} longer than one day ({dt})")
 
 
 
 def printPlayer(d, name):
-  if not name in d:
+  players = d["players"]
+  if not name in players:
     print(f"User <{name}> is not known.")
     return
 
   print(f"User: {name}")
-  print(f"Last seen: {d[name]['lastSeen']}")
-  print(f"First login: {d[name]['firstLogin']}")
-  print(f"Time played: {d[name]['totalTime']}")
-  print(f"Chunks generated: {d[name]['chunks']}")
-  print(f"Chat messages sent: {d[name]['nMsg']}")
-  print(f"Suicides: {d[name]['suicides']}")
-  if "planes" in d[name]:
-    realms = ', '.join(d[name]['planes'])
+  print(f"Last seen: {players[name]['lastSeen']}")
+  print(f"First seen: {players[name]['firstSeen']}")
+  print(f"Time played: {players[name]['totalTime']}")
+  print(f"Chunks generated: {players[name]['chunks']}")
+  print(f"Chat messages sent: {players[name]['messages']}")
+  print(f"Suicides: {players[name]['suicides']}")
+  if "planes" in players[name]:
+    realms = ', '.join(players[name]['planes'])
     print(f"Visited {realms}")
 
 
@@ -346,12 +369,22 @@ if __name__ == "__main__":
 
   files = sorted(os.listdir(config["chatlogDir"]))
   files = [config["chatlogDir"] + f for f in files]
-  data = {"players": {}, "print": False}
+  data = {
+    "players": {},
+    "deathbymob": {},
+    "cleanups": [],
+    "chunkGenerations": {},
+    "print": False,
+  }
 
   import time
   start = time.time()
 
-  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, analyzeSuicide, analyzeCleanups]
+  # For every line in the chatlog, the analyzers are called one after
+  # another until one returns True, signaling that its regex matched
+  # and no further parsing is necessary. The most frequent matches
+  # should therefore be at the beginning of the list. (-> performance)
+  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeSuicides, analyzeCleanups, parseShutdowns]
   matches = [0] * len(analyzers)
   for fileName in files:
     with open(fileName) as f:
@@ -364,52 +397,28 @@ if __name__ == "__main__":
 
   end = time.time()
   print("Dauer: ", end - start)
-  #print(matches)
-  #print(data["players"]["jeinzi"])
-
-  t_step = 5*60
-
+  print(matches)
 
   cursor = connection.cursor()
-  query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?);"
-  for name in data["players"]:
+  query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+  for name,player in data["players"].items():
     try:
-        if data["players"][name].get("nLogin"):
-          nLogin = data["players"][name]["nLogin"]
-        else:
-          nLogin = 0
-
-        if data["players"][name].get("firstLogin"):
-          firstLogin = data["players"][name]["firstLogin"]
-        else:
-          firstLogin = None
-
-        if data["players"][name].get("lastSeen"):
-          lastSeen = data["players"][name]["lastSeen"]
-        else:
-          lastSeen = None
-
-        if data["players"][name].get("totalTime"):
-          totalTime = data["players"][name]["totalTime"].total_seconds()
-        else:
-          totalTime = None
-
-        if data["players"][name].get("nMsg"):
-          nMsg = data["players"][name]["nMsg"]
-        else:
-          nMsg = 0
-
-        if data["players"][name].get("chunks"):
-          chunks = data["players"][name]["chunks"]
-        else:
-          chunks = 0
-
-        if data["players"][name].get("suicides"):
-          nSuicides = data["players"][name]["suicides"]
-        else:
-          nSuicides = 0
-
-        cursor.execute(query, (name, firstLogin, lastSeen, totalTime, nLogin, nMsg, nSuicides, chunks))
+        cursor.execute(query, (
+          name,
+          player["firstSeen"],
+          player["lastSeen"],
+          player["totalTime"].total_seconds(),
+          player["nLogins"],
+          player["nMsg"],
+          player["nSuicides"],
+          player["nChunks"],
+          player["nDuctTapes"],
+          player["nKicks"],
+          player["nMarks"],
+          player["nShouts"],
+          player["nMes"],
+          ", ".join(player["planes"])
+        ))
     except mariadb.IntegrityError as e:
         pass
 
@@ -420,10 +429,12 @@ if __name__ == "__main__":
   for c in data["cleanups"]:
     cursor.execute(query, (c["timestamp"], c["n"]))
 
+  query = "INSERT INTO chunkGenerations VALUES (DEFAULT, ?, ?);"
+  for timestamp,count in data["chunkGenerations"].items():
+    cursor.execute(query, (timestamp, count))
+
   query = "INSERT INTO mobs VALUES (DEFAULT, ?, ?);"
   for name,count in data["deathbymob"].items():
     cursor.execute(query, (name, count))
-  # timestamp DATETIME NOT NULL, accountsKept INT UNSIGNED
-  # name, nDeaths
 
   connection.commit()
