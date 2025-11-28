@@ -93,7 +93,6 @@ def analyzeLogins(l: str, data: dict):
     name = res.groups()[-1]
     startDate = datetimeFromRegex(res.groups())
     ensurePlayer(players, name, startDate)
-    players[name]["start"] = startDate
     players[name]["sessions"].append({"start": startDate, "end": None})
     players[name]["nLogins"] += 1
     updateLastSeen(players[name], startDate)
@@ -113,7 +112,6 @@ def analyzeLogins(l: str, data: dict):
       print(f"Session of {name} on {endDate} never started")
     updateLastSeen(players[name], endDate)
     return True
-
   return False
 
 
@@ -209,31 +207,20 @@ def analyzeRenames(l: str, data: dict):
     return False
   from_name = res.groups()[6]
   to_name = res.groups()[8]
-  #print(f"{from_name} -> {to_name}")
+  timestamp = datetimeFromRegex(res.groups())
 
   # End session for old player name.
-  timestamp = datetimeFromRegex(res.groups())
-  try:
-    dt = timestamp - d[name]["start"]
-  except KeyError as e:
-    #print("Warning: KeyError on {}".format(l))
-    #print(e)
-    print(f"NEW KeyError: {l.rstrip("\n")}")
-    return True
-  if players[from_name]["sessions"][-1]["end"] == None:
-    players[from_name]["sessions"][-1]["end"] = endDate
+  if len(players[from_name]["sessions"]) != 0 and players[from_name]["sessions"][-1]["end"] == None:
+    players[from_name]["sessions"][-1]["end"] = timestamp
   else:
-    print(f"Session of {from_name} never started")
-  if not players[from_name].get("totalTime"):
-    players[from_name]["totalTime"] = datetime.timedelta()
-  players[from_name]["totalTime"] += dt
+    print(f"EMPTY: {l}")
 
-  # Begin session for new player name.
+  # Start session for new player.
   ensurePlayer(players, to_name, timestamp)
-  players[name]["start"] = startDate
-  players[name]["sessions"].append({"start": startDate, "end": None})
-  players[name]["nLogins"] += 1
-  updateLastSeen(players[name], startDate)
+  players[to_name]["sessions"].append({"start": timestamp, "end": None})
+  players[to_name]["nLogins"] += 1
+  updateLastSeen(players[to_name], timestamp)
+  return True
 
 
 def analyzeKicks(l: str, data: dict):
@@ -285,9 +272,20 @@ def analyzeMarks(l: str, data: dict):
 
 
 def parseShutdowns(l: str, data: dict):
-  # Server: Normal shutdown. Everybody off!
-  # TODO: Terminate all player sessions.
-  return False
+  # Server: Startup complete.
+  # Server: Exited without signal. If this is a normal failure the server will restart in a few seconds.
+  regex_shutdown = dateRegexNew + serverMsgPrefix + "(Startup complete|Normal shutdown|Exited without signal)"
+
+  if not (res := re.search(regex_shutdown, l)):
+    return False
+
+  # Terminate all player sessions.
+  timestamp = datetimeFromRegex(res.groups())
+  for name,p in data["players"].items():
+    if len(p["sessions"]) == 0 or p["sessions"][-1]["end"] != None:
+      continue
+    p["sessions"][-1]["end"] = timestamp
+  return True
 
 
 def printLine(l: str, data: dict):
@@ -295,8 +293,13 @@ def printLine(l: str, data: dict):
   return False
 
 
-def sumTotalTime(player: dict):
-  pass
+def sumTotalTime(players: dict):
+  for name,p in players.items():
+    totalTime = datetime.timedelta()
+    for s in p["sessions"]:
+      if s["start"] == None or s["end"] == None:
+        continue
+      p["totalTime"] += s["end"] - s["start"]
   #try:
   #    dt = endDate - players[name]["start"]
   #except KeyError as e:
@@ -309,6 +312,28 @@ def sumTotalTime(player: dict):
   #  print(f"Session of {name} longer than one day ({dt})")
 
 
+def checkSessions(players: dict):
+  n_issues = 0
+  for name,p in players.items():
+    for i,s in enumerate(p["sessions"]):
+      valid = True
+      if s["start"] == None:
+        #print(f"Session {i} of player '{name}' does not have a start.")
+        n_issues += 1
+        valid = False
+      if s["end"] == None:
+        #print(f"Session {i} of player '{name}' does not have an end.")
+        n_issues += 1
+        valid = False
+      if s["start"] == None and s["end"] == None:
+        print("---------------- BOTH START AND END EMPTY ----------------")
+      if not valid:
+        continue
+      dt = s["end"] - s["start"]
+      if dt.total_seconds() > 3600*24:
+        print(f"Session {i} of player '{name}' is longer than one day. ({dt})")
+        n_issues += 1
+  print(f"{n_issues=}")
 
 def printPlayer(d, name):
   players = d["players"]
@@ -384,20 +409,22 @@ if __name__ == "__main__":
   # another until one returns True, signaling that its regex matched
   # and no further parsing is necessary. The most frequent matches
   # should therefore be at the beginning of the list. (-> performance)
-  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeSuicides, analyzeCleanups, parseShutdowns]
+  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeRenames, analyzeSuicides, analyzeCleanups, parseShutdowns]
   matches = [0] * len(analyzers)
   for fileName in files:
     with open(fileName) as f:
       for l in f:
         for i,analyzer in enumerate(analyzers):
-          res = analyzer(l, data)
-          if res:
+          if analyzer(l, data):
             matches[i] += 1
             break
 
+  sumTotalTime(data["players"])
   end = time.time()
   print("Dauer: ", end - start)
   print(matches)
+
+  checkSessions(data["players"])
 
   cursor = connection.cursor()
   query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
