@@ -12,7 +12,7 @@ from mobmessages import kill_ang
 
 # Date format switch happened on 2017-07-05
 dateRegexNew = r"^\[(\d{4})/(\d{2})/(\d{2}), (\d{2}):(\d{2}):(\d{2}) UTC\][ ]*"
-serverMsgPrefix = "# Server: "
+serverMsgPrefix = "^# Server: "
 regexNameWithMark = (
   "<(!)?(.*?)"         # Then, capture the user name; optional ! in case of shouting: "<!boxface"
   r"( \["              # Open a new group in case the player is marked, with coordinates show in brackets: " ["
@@ -26,41 +26,37 @@ regexNameWithMark = (
 
 
 
-def analyzeMapgen(l: str, data: dict):
+def analyzeMapgen(data: dict, l: str, timestamp: datetime.datetime):
   players = data["players"]
   chunkGenerations = data["chunkGenerations"]
+  date = timestamp.date()
 
   try:
-    if l[30] != "#":
+    if l[0] != "#":
       # ToDo: Are there any mapgen messages before the current datetime format was introduced?
       return False
   except IndexError:
       pass
 
-  regexBlame = dateRegexNew + r"# Server: Mapgen scrambling\. Blame <(.*?)> for lag. Chunks: (\d*)\.$"
+  regexBlame = serverMsgPrefix + r"Mapgen scrambling\. Blame <(.*?)> for lag. Chunks: (\d*)\.$"
   res = re.search(regexBlame, l)
   if res:
     g = res.groups()
-    timestamp = datetimeFromRegex(g)
-    name = g[6]
-    chunks = int(g[7])
+    name = g[0]
+    chunks = int(g[1])
     ensurePlayer(players, name, timestamp)
     players[name]["nChunks"] += chunks
 
-    date = timestamp.date()
     updateLastSeen(players[name], timestamp)
     if not chunkGenerations.get(date):
-      # This is needed for the chatlog of 2024-07-18, because at there is a chunk generation of
-      # 2024-07-19 at the end.
       chunkGenerations[date] = 0
     chunkGenerations[date] += chunks
     return True
 
-  regexAnon = dateRegexNew + r"# Server: Mapgen working, expect lag\. \(Chunks: (\d*)\.\)$"
+  regexAnon = serverMsgPrefix + r"Mapgen working, expect lag\. \(Chunks: (\d*)\.\)$"
   res = re.search(regexAnon, l)
   if res:
-    chunks = int(res.groups()[6])
-    date = dateFromRegex(res.groups())
+    chunks = int(res.groups()[0])
     if not chunkGenerations.get(date):
       chunkGenerations[date] = 0
     chunkGenerations[date] += chunks
@@ -69,7 +65,7 @@ def analyzeMapgen(l: str, data: dict):
   return False
 
 
-def analyzeLogins(l: str, data: dict):
+def analyzeLogins(data: dict, l: str, timestamp: datetime.datetime):
   # Issues
   # - Other logout messages (kicking etc.)
   # - Player has not logged out yet (staying logged in past midnight UTC, especially on first login)
@@ -77,96 +73,88 @@ def analyzeLogins(l: str, data: dict):
 
   players = data["players"]
 
-  joinString = dateRegexNew + r"\*{3} <(.*?)> joined the game.$"
+  joinString = r"^\*{3} <(.*?)> joined the game\.$"
   # The quit string regex does not have a $ at the end, because an
   # additional comment in parenthesis may follow.
-  quitString = dateRegexNew + r"\*{3} <(.*?)> left the game."
+  quitString = r"^\*{3} <(.*?)> left the game\."
 
   try:
-    if l[30] != "*":
+    if l[0] != "*":
       return False
   except IndexError:
       return False
   res = re.search(joinString, l)
   if res:
-    dateGroups = res.groups()[:-1]
-    name = res.groups()[-1]
-    startDate = datetimeFromRegex(res.groups())
-    startSession(data, name, startDate)
+    name = res.groups()[0]
+    startSession(data, name, timestamp)
     return True
 
   res = re.search(quitString, l)
   if res:
-    dateGroups = res.groups()[:-1]
-    name = res.groups()[-1]
-    endDate = datetimeFromRegex(res.groups())
-    endSession(data, name, endDate)
+    name = res.groups()[0]
+    endSession(data, name, timestamp)
     return True
+
   return False
 
 
-def analyzeChatMessages(l: str, data: dict):
+def analyzeChatMessages(data: dict, l: str, timestamp: datetime.datetime):
   # Get all lines that start with a username surrounded by chevrons (< and >),
   # i.e. all user messages in public chat.
   # Example with all optional groups present:
   # <!boxface [Caverns: 1059,-5791,-8929]!> HELP
   # Example without realm:
   # <J2 [-232,-4,1]> hello?
-  regex = dateRegexNew + regexNameWithMark
   players = data["players"]
 
-  res = re.search(regex, l)
+  res = re.search("^" + regexNameWithMark, l)
   if not res:
     return False
-  name = res.groups()[7]
-  timestamp = datetimeFromRegex(res.groups())
+  name = res.groups()[1]
   ensurePlayer(players, name, timestamp)
   updateLastSeen(players[name], timestamp)
   players[name]["nMsg"] += 1
-  if res.groups()[6] == "!":
+  if res.groups()[0] == "!":
     players[name]["nShouts"] += 1
   return True
 
 
-def analyzePlanes(l: str, data: dict):
+def analyzePlanes(data: dict, l: str, timestamp: datetime.datetime):
   # Server: <Nakilashiva> has plane shifted to Overworld.
   # Server: <dunks> has plane shifted to Outback. Noob!
   players = data["players"]
-  regex = dateRegexNew + serverMsgPrefix + r"<(.*?)> has plane shifted to (.*?)\.$"
+  regex = serverMsgPrefix + r"<(.*?)> has plane shifted to (.*?)\.$"
 
   res = re.search(regex, l)
   if not res:
     return False
-  timestamp = datetimeFromRegex(res.groups())
-  name = res.groups()[6]
-  plane = res.groups()[7]
+  name, plane = res.groups()
   ensurePlayer(players, name, timestamp)
   if not plane in players[name]["planes"]:
     players[name]["planes"].append(plane)
   return True
 
 
-def analyzeSuicides(l: str, data: dict):
+def analyzeSuicides(data: dict, l: str, timestamp: datetime.datetime):
   players = data["players"]
-  regex = dateRegexNew + serverMsgPrefix + "<(.*?)> ended (her|him)self.$"
+  regex = serverMsgPrefix + "<(.*?)> ended (her|him)self.$"
   res = re.search(regex, l)
   if not res:
     return False
-  timestamp = datetimeFromRegex(res.groups())
-  name = res.groups()[6]
+  name = res.groups()[0]
   ensurePlayer(players, name, timestamp)
   players[name]["nSuicides"] += 1
   return True
 
 
-def analyzeDeathByMob(l: str, data: dict):
+re_ang = "|".join(kill_ang)
+mobRegex = serverMsgPrefix + f"(<.*?>|An explorer) was .*? by an? ({re_ang})? ?(.*?)\\.$"
+def analyzeDeathByMob(data: dict, l: str, timestamp: datetime.datetime):
   # "# Server: " .. victim .. " was " .. adv .. adj .. " by " .. an .. " " .. ang .. mname .. "."
-  re_ang = "|".join(kill_ang)
-  regex = dateRegexNew + serverMsgPrefix + f"(<.*?>|An explorer) was .*? by an? ({re_ang})? ?(.*?)\\.$"
-  res = re.search(regex, l)
+  res = re.search(mobRegex, l)
   if not res:
     return False
-  mob = res.groups()[8]
+  mob = res.groups()[-1]
   if not data["deathbymob"].get(mob):
     data["deathbymob"][mob] = 1
   else:
@@ -174,43 +162,41 @@ def analyzeDeathByMob(l: str, data: dict):
   return True
 
 
-def analyzeCleanups(l: str, data: dict):
+def analyzeCleanups(data: dict, l: str, timestamp: datetime.datetime):
   # [2025/11/16, 07:00:04 UTC]    # Server: Accounts have been hoovered. 1660 chars kept. Go save a stork.
-  regex = dateRegexNew + serverMsgPrefix + r"Accounts have been hoovered\. (\d*) chars kept\."
+  regex = serverMsgPrefix + r"Accounts have been hoovered\. (\d*) chars kept\."
   res = re.search(regex, l)
   if not res:
     return False
   data["cleanups"].append({
-    "timestamp": datetimeFromRegex(res.groups()),
-    "n": res.groups()[6]
+    "timestamp": timestamp,
+    "n": res.groups()[0]
   })
   return True
 
 
-def analyzeRenames(l: str, data: dict):
+def analyzeRenames(data: dict, l: str, timestamp: datetime.datetime):
   # [2022/08/29, 14:55:44 UTC]    # Server: Player <DragonsVolcanoDance> is reidentified as <GordanRamsey>!
   # [2019/03/31, 19:58:46 UTC]    # Server: Player <wannabe> renamed to <MustTest>!
-  players = data["players"]
-  regex = dateRegexNew + serverMsgPrefix + r"Player <([^<>]*)> (renamed to|is reidentified as) <([^<>]*)>"
+  regex = serverMsgPrefix + r"Player <([^<>]*)> (renamed to|is reidentified as) <([^<>]*)>"
   res = re.search(regex, l)
   if not res:
     return False
-  from_name = res.groups()[6]
-  to_name = res.groups()[8]
-  timestamp = datetimeFromRegex(res.groups())
+  from_name = res.groups()[0]
+  to_name = res.groups()[2]
 
   endSession(data, from_name, timestamp)
   startSession(data, to_name, timestamp)
   return True
 
 
-def analyzeKicks(l: str, data: dict):
+def analyzeKicks(data: dict, l: str, timestamp: datetime.datetime):
   # [2023/03/17, 00:39:01 UTC]    # Server: <Cucina> was kicked for being AFK too long.
   # [2023/03/17, 00:49:42 UTC]    # Server: <Jr> was kicked off the server.
-  regex = dateRegexNew + serverMsgPrefix + r"<(.*?)> was kicked"
+  regex = serverMsgPrefix + r"<(.*?)> was kicked"
   if not (res := re.search(regex, l)):
     return False
-  name = res.groups()[6]
+  name = res.groups()[0]
   if not data["players"].get(name):
     print(f"WEIRD: {name} was kicked without ever logging in")
     return True
@@ -218,50 +204,48 @@ def analyzeKicks(l: str, data: dict):
   return True
 
 
-def analyzeDuctTapes(l: str, data: dict):
+def analyzeDuctTapes(data: dict, l: str, timestamp: datetime.datetime):
   # [2025/11/22, 18:11:31 UTC]    # Server: Player <Q>'s chat has been duct-taped!
-  regex = dateRegexNew + serverMsgPrefix + r"Player <(.*?)>'s chat has been duct-taped"
+  regex = serverMsgPrefix + r"Player <(.*?)>'s chat has been duct-taped"
   if not (res := re.search(regex, l)):
     return False
-  name = res.groups()[6]
+  name = res.groups()[0]
   data["players"][name]["nDuctTapes"] += 1
   return True
 
 
-def analyzeMes(l: str, data: dict):
+def analyzeMes(data: dict, l: str, timestamp: datetime.datetime):
   # * <DragonsVolcanoDance> gives hamburger
   # * <Alex [-386,-6,412]> coughs
-  regex = dateRegexNew + r"\* " + regexNameWithMark
+  regex = r"^\* " + regexNameWithMark
   if not (res := re.search(regex, l)):
     return False
-  name = res.groups()[7]
-  timestamp = datetimeFromRegex(res.groups())
+  name = res.groups()[1]
   ensurePlayer(data["players"], name, timestamp)
   data["players"][name]["nMes"] += 1
   data["players"][name]["nMsg"] += 1
   return True
 
 
-def analyzeMarks(l: str, data: dict):
+def analyzeMarks(data: dict, l: str, timestamp: datetime.datetime):
   # Server: Player <linux> has been marked!
-  regex = dateRegexNew + serverMsgPrefix + r"Player <(.*?)> has been marked!"
+  regex = serverMsgPrefix + r"Player <(.*?)> has been marked!"
   if not (res := re.search(regex, l)):
     return False
-  name = res.groups()[6]
+  name = res.groups()[0]
   data["players"][name]["nMarks"] += 1
   return True
 
 
-def parseShutdowns(l: str, data: dict):
+def parseShutdowns(data: dict, l: str, timestamp: datetime.datetime):
   # Server: Startup complete.
   # Server: Exited without signal. If this is a normal failure the server will restart in a few seconds.
-  regex_shutdown = dateRegexNew + serverMsgPrefix + "(Startup complete|Normal shutdown|Exited without signal)"
+  regex_shutdown = serverMsgPrefix + "(Startup complete|Normal shutdown|Exited without signal)"
 
   if not (res := re.search(regex_shutdown, l)):
     return False
 
   # Terminate all player sessions.
-  timestamp = datetimeFromRegex(res.groups())
   for name in data["activeSessions"]:
     p = data["players"][name]
     if p["sessions"][-1]["end"] != None:
@@ -271,7 +255,7 @@ def parseShutdowns(l: str, data: dict):
   return True
 
 
-def printLine(l: str, data: dict):
+def printLine(data: dict, l: str, timestamp: datetime.datetime):
   print(l.rstrip("\n"))
   return False
 
@@ -388,8 +372,12 @@ if __name__ == "__main__":
   for fileName in files:
     with open(fileName) as f:
       for l in f:
+        if not (res := re.search(dateRegexNew, l)):
+          continue
+        timestamp = datetimeFromRegex(res.groups())
+        l = l[30:] # This fails at [2017/07/05, 22:17:40 UTC]
         for i,analyzer in enumerate(analyzers):
-          if analyzer(l, data):
+          if analyzer(data, l, timestamp):
             matches[i] += 1
             break
 
