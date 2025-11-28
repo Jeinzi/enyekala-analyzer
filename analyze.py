@@ -92,10 +92,7 @@ def analyzeLogins(l: str, data: dict):
     dateGroups = res.groups()[:-1]
     name = res.groups()[-1]
     startDate = datetimeFromRegex(res.groups())
-    ensurePlayer(players, name, startDate)
-    players[name]["sessions"].append({"start": startDate, "end": None})
-    players[name]["nLogins"] += 1
-    updateLastSeen(players[name], startDate)
+    startSession(data, name, startDate)
     return True
 
   res = re.search(quitString, l)
@@ -103,14 +100,7 @@ def analyzeLogins(l: str, data: dict):
     dateGroups = res.groups()[:-1]
     name = res.groups()[-1]
     endDate = datetimeFromRegex(res.groups())
-    if not players.get(name) or len(players[name]["sessions"]) == 0:
-      # ToDo
-      return True
-    if players[name]["sessions"][-1]["end"] == None:
-      players[name]["sessions"][-1]["end"] = endDate
-    else:
-      print(f"Session of {name} on {endDate} never started")
-    updateLastSeen(players[name], endDate)
+    endSession(data, name, endDate)
     return True
   return False
 
@@ -209,17 +199,8 @@ def analyzeRenames(l: str, data: dict):
   to_name = res.groups()[8]
   timestamp = datetimeFromRegex(res.groups())
 
-  # End session for old player name.
-  if len(players[from_name]["sessions"]) != 0 and players[from_name]["sessions"][-1]["end"] == None:
-    players[from_name]["sessions"][-1]["end"] = timestamp
-  else:
-    print(f"EMPTY: {l}")
-
-  # Start session for new player.
-  ensurePlayer(players, to_name, timestamp)
-  players[to_name]["sessions"].append({"start": timestamp, "end": None})
-  players[to_name]["nLogins"] += 1
-  updateLastSeen(players[to_name], timestamp)
+  endSession(data, from_name, timestamp)
+  startSession(data, to_name, timestamp)
   return True
 
 
@@ -281,10 +262,12 @@ def parseShutdowns(l: str, data: dict):
 
   # Terminate all player sessions.
   timestamp = datetimeFromRegex(res.groups())
-  for name,p in data["players"].items():
-    if len(p["sessions"]) == 0 or p["sessions"][-1]["end"] != None:
+  for name in data["activeSessions"]:
+    p = data["players"][name]
+    if p["sessions"][-1]["end"] != None:
       continue
     p["sessions"][-1]["end"] = timestamp
+  data["activeSessions"] = []
   return True
 
 
@@ -300,16 +283,6 @@ def sumTotalTime(players: dict):
       if s["start"] == None or s["end"] == None:
         continue
       p["totalTime"] += s["end"] - s["start"]
-  #try:
-  #    dt = endDate - players[name]["start"]
-  #except KeyError as e:
-  #  #print("Warning: KeyError on {}".format(l))
-  #  #print(e)
-  #  print(f"KeyError: {l.rstrip("\n")}")
-  #  return True
-  #players[name]["totalTime"] += dt
-  #if dt > datetime.timedelta(days=1):
-  #  print(f"Session of {name} longer than one day ({dt})")
 
 
 def checkSessions(players: dict):
@@ -400,6 +373,7 @@ if __name__ == "__main__":
     "cleanups": [],
     "chunkGenerations": {},
     "print": False,
+    "activeSessions": [],
   }
 
   import time

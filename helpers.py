@@ -22,6 +22,29 @@ def dateFromRegex(groups: list):
   return datetime.date(*r)
 
 
+def startSession(data: dict, name: str, timestamp: datetime.datetime):
+  ensurePlayer(data["players"], name, timestamp)
+  data["players"][name]["sessions"].append({"start": timestamp, "end": None})
+  data["players"][name]["nLogins"] += 1
+  updateLastSeen(data["players"][name], timestamp)
+  data["activeSessions"].append(name)
+
+
+def endSession(data: dict, name: str, timestamp: datetime.datetime):
+  # ToDo?
+  if not data["players"].get(name):
+    return
+  if len(data["players"][name]["sessions"]) == 0:
+    return
+  if data["players"][name]["sessions"][-1]["end"] != None:
+    #print(f"Session of {name} on {endDate} never started")
+    return
+
+  data["players"][name]["sessions"][-1]["end"] = timestamp
+  updateLastSeen(data["players"][name], timestamp)
+  data["activeSessions"].remove(name)
+
+
 userTemplate = {
   "nChunks": 0,
   "firstSeen": None,
