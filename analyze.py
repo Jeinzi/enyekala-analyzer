@@ -198,7 +198,7 @@ def analyzeKicks(data: dict, l: str, timestamp: datetime.datetime):
     return False
   name = res.groups()[0]
   if not data["players"].get(name):
-    print(f"WEIRD: {name} was kicked without ever logging in")
+    #print(f"WEIRD: {name} was kicked without ever logging in")
     return True
   data["players"][name]["nKicks"] += 1
   return True
@@ -367,14 +367,20 @@ if __name__ == "__main__":
   # another until one returns True, signaling that its regex matched
   # and no further parsing is necessary. The most frequent matches
   # should therefore be at the beginning of the list. (-> performance)
-  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeRenames, analyzeSuicides, analyzeCleanups, parseShutdowns]
+  analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, parseShutdowns, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeRenames, analyzeSuicides, analyzeCleanups]
   matches = [0] * len(analyzers)
   for fileName in files:
     with open(fileName) as f:
+      fileDate = datetime.date(*[int(n) for n in fileName.split("/")[-1].split("-")])
       for l in f:
         if not (res := re.search(dateRegexNew, l)):
           continue
         timestamp = datetimeFromRegex(res.groups())
+        if not timestamp.date() == fileDate:
+          # Skip messages that end up in the wrong file because
+          # someone pasted an old timestamp into the server chat.
+          # (I'm looking at you Mango and SD!)
+          continue
         l = l[30:] # This fails at [2017/07/05, 22:17:40 UTC]
         for i,analyzer in enumerate(analyzers):
           if analyzer(data, l, timestamp):
