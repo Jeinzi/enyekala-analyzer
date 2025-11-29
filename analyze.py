@@ -31,13 +31,6 @@ def analyzeMapgen(data: dict, l: str, timestamp: datetime.datetime):
   chunkGenerations = data["chunkGenerations"]
   date = timestamp.date()
 
-  try:
-    if l[0] != "#":
-      # ToDo: Are there any mapgen messages before the current datetime format was introduced?
-      return False
-  except IndexError:
-      pass
-
   regexBlame = serverMsgPrefix + r"Mapgen scrambling\. Blame <(.*?)> for lag. Chunks: (\d*)\.$"
   res = re.search(regexBlame, l)
   if res:
@@ -66,23 +59,12 @@ def analyzeMapgen(data: dict, l: str, timestamp: datetime.datetime):
 
 
 def analyzeLogins(data: dict, l: str, timestamp: datetime.datetime):
-  # Issues
-  # - Other logout messages (kicking etc.)
-  # - Player has not logged out yet (staying logged in past midnight UTC, especially on first login)
-  # - Name changes while logged in
-
   players = data["players"]
-
   joinString = r"^\*{3} <(.*?)> joined the game\.$"
   # The quit string regex does not have a $ at the end, because an
   # additional comment in parenthesis may follow.
   quitString = r"^\*{3} <(.*?)> left the game\."
 
-  try:
-    if l[0] != "*":
-      return False
-  except IndexError:
-      return False
   res = re.search(joinString, l)
   if res:
     name = res.groups()[0]
@@ -283,31 +265,14 @@ def checkSessions(players: dict):
         n_issues += 1
         valid = False
       if s["start"] == None and s["end"] == None:
-        print("---------------- BOTH START AND END EMPTY ----------------")
+        print("Both start and end of '{player}'\'s session {i} are None.")
       if not valid:
         continue
       dt = s["end"] - s["start"]
       if dt.total_seconds() > 3600*24:
         print(f"Session {i} of player '{name}' is longer than one day. ({dt})")
         n_issues += 1
-  print(f"{n_issues=}")
-
-def printPlayer(d, name):
-  players = d["players"]
-  if not name in players:
-    print(f"User <{name}> is not known.")
-    return
-
-  print(f"User: {name}")
-  print(f"Last seen: {players[name]['lastSeen']}")
-  print(f"First seen: {players[name]['firstSeen']}")
-  print(f"Time played: {players[name]['totalTime']}")
-  print(f"Chunks generated: {players[name]['chunks']}")
-  print(f"Chat messages sent: {players[name]['messages']}")
-  print(f"Suicides: {players[name]['suicides']}")
-  if "planes" in players[name]:
-    realms = ', '.join(players[name]['planes'])
-    print(f"Visited {realms}")
+  print(f"Session issues: {n_issues}")
 
 
 def plot_session_probability(player: str, t_step: int):
@@ -326,7 +291,7 @@ def plot_session_probability(player: str, t_step: int):
       seconds = t.hour*3600 + t.minute*60 + t.second
       P[round(seconds/t_step)] += 1
       t += dt
-  print(P)
+
   import matplotlib.pyplot as plt
   fig,ax = plt.subplots()
   T2 = []
@@ -389,11 +354,11 @@ if __name__ == "__main__":
 
   sumTotalTime(data["players"])
   end = time.time()
-  print("Dauer: ", end - start)
-  print(matches)
-
+  print("Duration: ", end - start)
+  print("Analyzer matches: ", matches)
   checkSessions(data["players"])
 
+  # Save resuls to database.
   cursor = connection.cursor()
   query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
   for name,player in data["players"].items():
