@@ -6,6 +6,7 @@ import mariadb
 import datetime
 import database
 import configmanager
+from tqdm import tqdm
 from helpers import *
 
 from mobmessages import kill_ang
@@ -275,37 +276,79 @@ def checkSessions(players: dict):
   print(f"Session issues: {n_issues}")
 
 
-def plot_session_probability(player: str, t_step: int):
+def plot_session_probability(player: str, t_step: int, days=7*4*3):
   T = list(range(0, 24*3600, t_step))
   P = [0]*len(T)
   import math
   for s in data["players"][player]["sessions"]:
+    if datetime.datetime.now(datetime.UTC) - s["start"] > datetime.timedelta(days=days):
+      continue
+    if s["end"] == None:
+      continue
+    dt = datetime.timedelta(seconds=t_step)
+    # Go to first point in time within the session rounded to multiples of t_step.
     t = s["start"]
     seconds = t.minute*60+t.second
     t -= datetime.timedelta(seconds=seconds)
     t += datetime.timedelta(seconds=t_step*math.ceil(seconds/t_step))
-    dt = datetime.timedelta(seconds=t_step)
-    if s["end"] == None:
-      continue
+    # Step through session with t_step and sample.
     while t >= s["start"] and t <= s["end"]:
       seconds = t.hour*3600 + t.minute*60 + t.second
       P[round(seconds/t_step)] += 1
       t += dt
 
+  # Normalize counted samples to total days within analyzed time period.
+  P = [p/days*100 for p in P]
+
   import matplotlib.pyplot as plt
   fig,ax = plt.subplots()
-  T2 = []
-  for t in T:
-    hour = int(t/3600)
-    t -= 3600*hour
-    minute = int(t/60)
-    t -= 60*minute
-    T2.append(datetime.time(hour=hour, minute=minute, second=t))
   ax.set_xlabel("Time (UTC)")
-  ax.set_ylabel("Days player was online at that time")
+  ax.set_ylabel("Online Probability / %")
+  ax.set_xlim([0, 24])
+  ax.grid(color="grey", linestyle="--", alpha=0.3)
   ax.plot([t/3600 for t in T], P)
   plt.show()
 
+
+def calc_daily_playtime(player: dict):
+  player["activity"] = {"dates": [], "playtimes": []}
+  #player["activity"]["playtimes"] = [0]*len(player["activity"]["dates"])
+  for s in player["sessions"]:
+    if s["start"] == None or s["end"] == None:
+      continue
+    dt = s["end"] - s["start"]
+    date = s["start"].date()
+    try:
+      i = player["activity"]["dates"].index(date)
+    except ValueError:
+      i = len(player["activity"]["dates"])
+      player["activity"]["dates"].append(date)
+      player["activity"]["playtimes"].append(0)
+    player["activity"]["playtimes"][i] += dt.total_seconds() / 3600
+
+
+def plot_activity_graph(player: dict):
+  dates = []
+  playtimes = []
+  date = datetime.date(2017, 7, 3)
+  today = datetime.datetime.now(datetime.UTC).date()
+  while date <= today:
+    dates.append(date)
+    try:
+      i = player["activity"]["dates"].index(date)
+      playtimes.append(player["activity"]["playtimes"][i])
+    except ValueError:
+      playtimes.append(0)
+    date += datetime.timedelta(days=1)
+
+  import matplotlib.pyplot as plt
+  plt.rcParams.update({"figure.figsize": (13, 6.5), "figure.dpi": 100})
+  fig,ax = plt.subplots()
+  ax.set_xlabel("Datetime UTC")
+  ax.set_ylabel("Time played / h")
+  ax.plot(dates, playtimes)
+  ax.grid(color="grey", linestyle="--", alpha=0.3)
+  plt.show()
 
 
 
@@ -334,7 +377,7 @@ if __name__ == "__main__":
   # should therefore be at the beginning of the list. (-> performance)
   analyzers = [analyzeChatMessages, analyzeLogins, analyzeMapgen, analyzePlanes, analyzeDeathByMob, parseShutdowns, analyzeKicks, analyzeMes, analyzeDuctTapes, analyzeMarks, analyzeRenames, analyzeSuicides, analyzeCleanups]
   matches = [0] * len(analyzers)
-  for fileName in files:
+  for fileName in tqdm(files, desc="Parsing chatlog"):
     with open(fileName) as f:
       fileDate = datetime.date(*[int(n) for n in fileName.split("/")[-1].split("-")])
       for l in f:
@@ -361,7 +404,7 @@ if __name__ == "__main__":
   # Save resuls to database.
   cursor = connection.cursor()
   query = "INSERT INTO players VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
-  for name,player in data["players"].items():
+  for i,(name,player) in enumerate(data["players"].items(), start=1):
     try:
         cursor.execute(query, (
           name,
@@ -381,6 +424,7 @@ if __name__ == "__main__":
         ))
     except mariadb.IntegrityError as e:
         pass
+    player["sqlId"] = i
 
   query = "INSERT INTO meta VALUES (DEFAULT, UTC_TIME());"
   cursor.execute(query, ())
@@ -396,5 +440,17 @@ if __name__ == "__main__":
   query = "INSERT INTO mobs VALUES (DEFAULT, ?, ?);"
   for name,count in data["deathbymob"].items():
     cursor.execute(query, (name, count))
+
+
+  for name,player in tqdm(data["players"].items(), desc="Session analysis"):
+    query = "INSERT INTO sessions VALUES (DEFAULT, ?, ?, ?);"
+    for s in player["sessions"]:
+      if s["start"] == None or s["end"] == None:
+        continue
+      try:
+        cursor.execute(query, (player["sqlId"], s["start"], s["end"]))
+      except mariadb.IntegrityError:
+        print("Database integrity error for ", name, player["sqlId"], s["start"], s["end"])
+    continue
 
   connection.commit()

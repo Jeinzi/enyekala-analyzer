@@ -22,6 +22,9 @@ def connect(config):
 def setup(connection):
   cursor = connection.cursor()
 
+  # Drop some tables first to relax foreign key constraints.
+  cursor.execute("DROP TABLE IF EXISTS sessions;")
+
   # Will create table. If it exists, drop it first.
   playersTableCreation = """CREATE OR REPLACE TABLE players (
     id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
@@ -65,12 +68,20 @@ def setup(connection):
     count INT UNSIGNED
   );"""
 
+  sessionsTableCreation = """CREATE OR REPLACE TABLE sessions (
+    id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+    playerId INT UNSIGNED NOT NULL REFERENCES players(id),
+    start DATETIME NOT NULL,
+    end DATETIME NOT NULL
+  );"""
+
 
   cursor.execute(playersTableCreation)
   cursor.execute(metaTableCreation)
   cursor.execute(mobsTableCreation)
   cursor.execute(chunkTableCreation)
   cursor.execute(accountCleanupTableCreation)
+  cursor.execute(sessionsTableCreation)
 
 
 

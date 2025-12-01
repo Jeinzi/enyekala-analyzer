@@ -14,7 +14,7 @@ def updateLastSeen(p: dict, time: datetime.datetime):
 
 def datetimeFromRegex(groups: list):
   r = [int(i) for i in groups[:6]]
-  return datetime.datetime(*r)
+  return datetime.datetime(*r, tzinfo=datetime.UTC)
 
 
 def dateFromRegex(groups: list):
