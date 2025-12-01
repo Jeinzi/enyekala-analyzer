@@ -41,18 +41,19 @@ if __name__ == "__main__":
   error_counter = 0
   while date != datetime.date.today():
     fileName = saveDir + date.isoformat()
-    if not os.path.exists(saveDir + date.isoformat()):
-      try:
-        saveChatlog(date, saveDir)
-      except:
-        error_counter += 1
-        if error_counter >= 3:
-          print("More than 3 errors, aborting.")
-          exit()
-        else:
-          print(f"Error on {date}, retrying...")
+    if os.path.exists(saveDir + date.isoformat()):
+      date += datetime.timedelta(days=1)
+      continue
+
+    try:
+      saveChatlog(date, saveDir)
+    except:
+      error_counter += 1
+      if error_counter >= 3:
+        print("More than 3 errors, aborting.")
+        exit()
       else:
-        date += datetime.timedelta(days=1)
-        error_counter = 0
+        print(f"Error on {date}, retrying...")
     else:
       date += datetime.timedelta(days=1)
+      error_counter = 0
